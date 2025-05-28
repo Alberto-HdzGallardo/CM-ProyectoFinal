@@ -1,0 +1,1 @@
+Carpetas para contenido JSON
