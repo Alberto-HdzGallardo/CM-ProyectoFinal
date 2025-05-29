@@ -49,6 +49,8 @@ func calcularPorcentajePorCadaCategoria(movimientos: [Movimiento]) -> [Categoria
     return categoriasGasto
 }
 
+
+
 struct DonutChartView: View {
     var categorias: [CategoriaGasto]
     var total: Double{
@@ -152,15 +154,15 @@ struct MainTabView: View{
                 }
             IngresosGastosView()
                 .tabItem{
-                    Label("Ingresos/Gastos", systemImage: "chart.bar.fill")
+                    Label("Ingresos/Gastos", systemImage: "plus")
                 }
             ReportesView()
                 .tabItem{
-                    Label("Reportes", systemImage: "chart.bar.fill")
+                    Label("Reportes", systemImage: "chart.bar.xaxis")
                 }
             MarketExchangeView()
                 .tabItem{
-                    Label("Market Exchange", systemImage: "chart.xyaxis.line")
+                    Label("Market Exchange", systemImage: "chart.line.uptrend.xyaxis")
                 }
         }
         .environment(\.managedObjectContext, PersistenceController.shared.container.viewContext)
@@ -392,9 +394,184 @@ struct IngresosGastosView: View{
     }
 }
 
-struct ReportesView: View{
-    var body: some View{
-        Text("Reportes").font(.largeTitle)
+struct ReportesView: View {
+    @EnvironmentObject var movimientosStore: MovimientosStore
+    @State private var datosDePrueba = generarDatosDePrueba()
+    @State private var intervaloSeleccionado: IntervaloTiempo = .dia
+    
+    
+    var movimientosFiltrados: [Movimiento] {
+        filtrarMovimientosPorIntervalo(datosDePrueba, intervalo: intervaloSeleccionado)
+    }
+    
+    var barras: [Barra] {
+        barrasParaMovimientos(movimientosFiltrados, intervalo: intervaloSeleccionado)
+    }
+    
+    enum IntervaloTiempo: String, CaseIterable, Identifiable {
+        case dia = "Día"
+        case mes = "Mes"
+        case año = "Año"
+        
+        var id: String { self.rawValue }
+    }
+    
+    // Función de filtrado
+    func filtrarMovimientosPorIntervalo(_ movimientos: [Movimiento], intervalo: IntervaloTiempo) -> [Movimiento] {
+        let calendar = Calendar.current
+        let ahora = Date()
+        
+        return movimientos.filter { mov in
+            switch intervalo {
+            case .dia:
+                return calendar.isDate(mov.fecha, inSameDayAs: ahora)
+            case .mes:
+                return calendar.isDate(mov.fecha, equalTo: ahora, toGranularity: .month)
+            case .año:
+                return calendar.isDate(mov.fecha, equalTo: ahora, toGranularity: .year)
+            }
+        }
+    }
+    
+    // Estructura Barra para grafica
+    struct Barra: Identifiable, Equatable {
+        var id = UUID()
+        var label: String
+        var valor: Double
+        var fecha: Date? // Para ordenamiento preciso
+    }
+    
+    
+    func barrasParaMovimientos(_ movimientos: [Movimiento], intervalo: IntervaloTiempo) -> [Barra] {
+        let calendar = Calendar.current
+        let dateFormatter = DateFormatter()
+        
+        switch intervalo {
+        case .dia:
+            // Agrupar por hora del día
+            dateFormatter.dateFormat = "HH"
+            let agrupados = Dictionary(grouping: movimientos) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            
+            return agrupados.map { (hora, movs) in
+                let total = movs.reduce(0) { $0 + $1.monto }
+                return Barra(label: "\(hora):00", valor: total, fecha: movs.first?.fecha)
+            }.sorted { $0.label < $1.label }
+            
+        case .mes:
+            // Agrupar por día del mes con formato de fecha completo
+            dateFormatter.dateFormat = "dd MMM"
+            let agrupados = Dictionary(grouping: movimientos) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            
+            return agrupados.map { (dia, movs) in
+                let total = movs.reduce(0) { $0 + $1.monto }
+                return Barra(label: dia, valor: total, fecha: movs.first?.fecha)
+            }.sorted { $0.fecha ?? Date() < $1.fecha ?? Date() }
+            
+        case .año:
+            // Agrupar por mes con nombre completo
+            dateFormatter.dateFormat = "MMMM"
+            let agrupados = Dictionary(grouping: movimientos) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            
+            return agrupados.map { (mes, movs) in
+                let total = movs.reduce(0) { $0 + $1.monto }
+                return Barra(label: mes, valor: total, fecha: movs.first?.fecha)
+            }.sorted { $0.fecha ?? Date() < $1.fecha ?? Date() }
+        }
+    }
+    
+    var body: some View {
+        VStack {
+            HeaderReportes()
+            
+            Picker("Intervalo de tiempo", selection: $intervaloSeleccionado) {
+                ForEach(IntervaloTiempo.allCases) { intervalo in
+                    Text(intervalo.rawValue).tag(intervalo)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding()
+            
+            Spacer()
+            
+            // Gráfica con colores y animación
+            Chart(barras) { barra in
+                BarMark(
+                    x: .value("Periodo", barra.label),
+                    y: .value("Monto", barra.valor)
+                )
+                .foregroundStyle(barra.valor < 0 ? .red : .green)
+                .annotation(position: .top) {
+                    Text(barra.valor, format: .currency(code: "MXN"))
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading)
+            }
+            .frame(height: 200)
+            .padding()
+            .animation(.easeInOut, value: barras)
+            
+            // Lista de movimientos con secciones según el intervalo
+            List {
+                ForEach(groupedMovimientos, id: \.0) { section, items in
+                    Section(header: Text(section).font(.headline)) {
+                        ForEach(items) { mov in
+                            HStack {
+                                Text(mov.tipo)
+                                Spacer()
+                                Text(mov.monto, format: .currency(code: "MXN"))
+                                    .foregroundColor(mov.monto < 0 ? .red : .green)
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+        }
+        .padding()
+    }
+    
+    // Agrupa movimientos para mostrarlos en secciones
+    private var groupedMovimientos: [(String, [Movimiento])] {
+        let calendar = Calendar.current
+        let dateFormatter = DateFormatter()
+        
+        switch intervaloSeleccionado {
+        case .dia:
+            dateFormatter.dateFormat = "HH:00"
+            let grouped = Dictionary(grouping: movimientosFiltrados) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            return grouped.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 }
+            
+        case .mes:
+            dateFormatter.dateFormat = "dd MMMM"
+            let grouped = Dictionary(grouping: movimientosFiltrados) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            return grouped.map { ($0.key, $0.value) }.sorted {
+                calendar.date(from: calendar.dateComponents([.day], from: dateFormatter.date(from: $0.0) ?? Date())) ?? Date() <
+                calendar.date(from: calendar.dateComponents([.day], from: dateFormatter.date(from: $1.0) ?? Date())) ?? Date()
+            }
+            
+        case .año:
+            dateFormatter.dateFormat = "MMMM"
+            let grouped = Dictionary(grouping: movimientosFiltrados) { mov -> String in
+                dateFormatter.string(from: mov.fecha)
+            }
+            return grouped.map { ($0.key, $0.value) }.sorted {
+                calendar.date(from: calendar.dateComponents([.month], from: dateFormatter.date(from: $0.0) ?? Date())) ?? Date() <
+                calendar.date(from: calendar.dateComponents([.month], from: dateFormatter.date(from: $1.0) ?? Date())) ?? Date()
+            }
+        }
     }
 }
 
@@ -422,13 +599,15 @@ struct MarketExchangeView: View{
            .sheet(isPresented: $isShowingStockSearchSheet) {
                SearchStockView()
            }
-        }
+        
 
            
            
        }
-}
-   struct ConfiguracionUsuarioView: View {
+   }
+
+
+struct ConfiguracionUsuarioView: View {
     @AppStorage("usuarioLogueado") var usuarioLogueado: String = ""
     @EnvironmentObject var session: SessionManager
     
